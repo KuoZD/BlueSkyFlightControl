@@ -21,6 +21,7 @@ NAVGATION_t nav;
 Kalman_t kalmanVel;
 Kalman_t kalmanPos;
 
+
 static void KalmanVelInit(void);
 static void KalmanPosInit(void);
 
@@ -55,7 +56,7 @@ void VelocityEstimate(void)
     
     //计算时间间隔，用于积分
     deltaT = (GetSysTimeUs() - previousT) * 1e-6;
-    deltaT = ConstrainFloat(deltaT, 0.0005, 0.002);	
+    deltaT = ConstrainFloat(deltaT, 0.0001, 0.01);	
 	previousT = GetSysTimeUs();		
 	
 	//获取运动加速度
@@ -88,23 +89,25 @@ void VelocityEstimate(void)
     }
 
     //加速度积分，并转换单位为cm
-    input.x = nav.accel.x * (deltaT * 1000);
-    input.y = nav.accel.y * (deltaT * 1000);
-    input.z = nav.accel.z * (deltaT * 1000);
+    input.x = nav.accel.x * deltaT * 100 * GRAVITY_ACCEL;
+    input.y = nav.accel.y * deltaT * 100 * GRAVITY_ACCEL;
+    input.z = nav.accel.z * deltaT * 100 * GRAVITY_ACCEL;
     
     //测试用
-    if(GetArmedStatus() == ARMED)
-    {
+//    if(GetArmedStatus() == ARMED)
+//    {
         nav.velocity2.x += input.x;
         nav.velocity2.y += input.y;
         nav.velocity2.z += input.z;
-    }
-    else
-    {
-        nav.velocity2.x = 0;
-        nav.velocity2.y = 0;
-        nav.velocity2.z = 0;       
-    }
+//    }
+//    else
+//    {
+//        nav.velocity2.x = 0;
+//        nav.velocity2.y = 0;
+//        nav.velocity2.z = 0;       
+//    }
+    nav.accelLpf.x = nav.accelLpf.x * 0.999f + nav.accel.x * 0.001f;
+    nav.accelLpf.y = nav.accelLpf.y * 0.999f + nav.accel.y * 0.001f;
     nav.accelLpf.z = nav.accelLpf.z * 0.999f + nav.accel.z * 0.001f;
     
     //加速度值始终存在零偏误差，这里使用误差积分来修正零偏
@@ -181,6 +184,81 @@ void PositionEstimate(void)
     //卡尔曼滤波器更新
     KalmanUpdate(&kalmanPos, input, posMeasure, fuseFlag);
     nav.position = kalmanPos.status;    
+}
+
+/**********************************************************************************************************
+*函 数 名: AltCovarianceSelfAdaptation
+*功能说明: 高度误差协方差自适应
+*形    参: 无
+*返 回 值: 无
+**********************************************************************************************************/
+void AltCovarianceSelfAdaptation(void)
+{
+	static Vector3f_t accelLpf;
+	float accelMag;
+	float windSpeed, windSpeedAcc;
+
+	//对运动加速度进行低通滤波
+	accelLpf.x = accelLpf.x * 0.995f + nav.accel.x * 0.005f;
+	accelLpf.y = accelLpf.y * 0.995f + nav.accel.y * 0.005f;	
+
+	//计算运动加速度模值
+	accelMag = Pythagorous2(accelLpf.x, accelLpf.y);
+
+	//获取当前环境风速与风加速（悬停时）
+	windSpeed = GetWindSpeed() * 0.02f;
+	windSpeedAcc = GetWindSpeedAcc() * 0.005f;
+
+	//飞行中，速度变化会带来气压变化（伯努利效应），引起高度计算误差
+	//除了要适当补偿气压误差外，还可以在这种状态下增大高度测量协方差，减小气压融合权重
+	if(GetPosControlStatus() == POS_CHANGED)	
+	{
+		if(GetAltControlStatus() == ALT_HOLD)
+		{
+			kalmanVel.r[8] = 2000 * (1 + ConstrainFloat(accelMag, 0, 0.5f));
+			kalmanPos.r[8] = 1000 * (1 + ConstrainFloat(accelMag, 0, 1.0f));
+		}
+		else
+		{
+			kalmanVel.r[8] = 2000 * (1 + ConstrainFloat(accelMag, 0, 0.5f));
+			kalmanPos.r[8] = 500;			
+		}
+	}
+	else if(GetPosControlStatus() == POS_HOLD)	
+	{
+		//悬停时,气压误差会随着环境风速的变化而增大
+		if(GetAltControlStatus() == ALT_HOLD)
+		{
+			kalmanVel.r[8] = 2000 * (1 + ConstrainFloat(windSpeed * 0.8f + windSpeedAcc * 0.2f, 0, 0.5f));
+			kalmanPos.r[8] = 1000 * (1 + ConstrainFloat(windSpeed * 0.8f + windSpeedAcc * 0.2f, 0, 1.0f));	
+		}
+		else if(GetAltControlStatus() == ALT_CHANGED)
+		{
+			kalmanVel.r[8] = 2000;
+			kalmanPos.r[8] = 200;	
+		}
+		else
+		{
+			kalmanVel.r[8] = 1500;
+			kalmanPos.r[8] = 500;			
+		}
+	}
+	else
+	{
+		kalmanVel.r[8] = 2000;
+		kalmanPos.r[8] = 1000;	
+	}
+}
+
+/**********************************************************************************************************
+*函 数 名: PosCovarianceSelfAdaptation
+*功能说明: 位置误差协方差自适应
+*形    参: 无
+*返 回 值: 无
+**********************************************************************************************************/
+void PosCovarianceSelfAdaptation(void)
+{
+
 }
 
 /**********************************************************************************************************

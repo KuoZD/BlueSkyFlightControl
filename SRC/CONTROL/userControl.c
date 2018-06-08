@@ -3,7 +3,7 @@
                                 Github: github.com/loveuav/BlueSkyFlightControl
                                 技术讨论：bbs.loveuav.com/forum-68-1.html
  * @文件     userControl.c
- * @说明     用户操控逻辑处理，目前分为手动档、半自动档、自动档
+ * @说明     用户操控逻辑处理，目前分为手动档（自稳）、半自动档（定高）、自动档（定点）
  * @版本  	 V1.0
  * @作者     BlueSky
  * @网站     bbs.loveuav.com
@@ -17,10 +17,11 @@
 #include "navigation.h"
 #include "board.h"
 
-#define MAXANGLE  400
+#define MAXANGLE  400               //最大飞行角度：40°
 #define MAXRCDATA 450
-#define ALT_SPEED_UP_MAX	500	//5m/s
-#define ALT_SPEED_DOWN_MAX	300
+#define ALT_SPEED_UP_MAX	500	    //最大上升速度：5m/s
+#define ALT_SPEED_DOWN_MAX	300     //最大下降速度：3m/s
+#define HORIZON_SPEED_MAX	800     //最大水平飞行速度：8m/s
 
 static void ManualControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget);
 static void SemiAutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget);
@@ -54,17 +55,17 @@ void UserControl(void)
 
     if(flightMode == MANUAL)        
     {
-        //手动档
+        //手动档（自稳）
         ManualControl(rcCommand, &rcTarget);
     }
     else if(flightMode ==SEMIAUTO)  
     {
-        //半自动档
+        //半自动档（定高）
         SemiAutoControl(rcCommand, &rcTarget);        
     }
     else if(flightMode == AUTO)     
     {
-        //自动档
+        //自动档（定点）
         AutoControl(rcCommand, &rcTarget);       
     }
 
@@ -100,6 +101,18 @@ static void SemiAutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
     
     //高度控制
     AltControl(rcCommand);
+
+	//判断飞行状态
+	if(abs(rcCommand.roll) > 50 || abs(rcCommand.pitch) > 50)
+	{
+        //更新位置控制状态
+        SetPosControlStatus(POS_CHANGED);
+	}
+	else
+	{
+        //更新位置控制状态
+        SetPosControlStatus(POS_HOLD);		
+	}
 }
 
 /**********************************************************************************************************
@@ -113,7 +126,7 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
     static int32_t lastTimePosChanged = 0;
     static int32_t lastTimePosBrake   = 0;
     static int16_t rcDeadband     = 50;
-	static float velRate          = (float)500 / MAXRCDATA;
+	static float velRate          = (float)HORIZON_SPEED_MAX / MAXRCDATA;
     static uint8_t posHoldChanged = 0;
     static Vector3f_t velCtlTarget;
     static Vector3f_t posCtlTarget;    
@@ -125,7 +138,7 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
     AltControl(rcCommand);  
 
     /**********************************************************************************************************
-    位置控制：该模式下油门摇杆量控制飞行速度，回中时飞机自动悬停
+    位置控制：该模式下摇杆量控制飞行速度，回中时飞机自动悬停
     **********************************************************************************************************/    
     if(abs(rcCommand.roll) > rcDeadband || abs(rcCommand.pitch) > rcDeadband)
     {
@@ -133,8 +146,8 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
         rcCommand.pitch = ApplyDeadbandInt(rcCommand.pitch, rcDeadband);
         
         //摇杆量转为目标速度，低通滤波改变操控手感
-        velCtlTarget.x = velCtlTarget.x * 0.98f + (rcCommand.pitch * velRate) * 0.02f;
-        velCtlTarget.y = velCtlTarget.y * 0.98f + (rcCommand.roll * velRate) * 0.02f;
+        velCtlTarget.x = velCtlTarget.x * 0.992f + (rcCommand.pitch * velRate) * 0.008f;
+        velCtlTarget.y = velCtlTarget.y * 0.992f + (rcCommand.roll * velRate) * 0.008f;
         
         //直接控制速度，禁用位置控制
         SetPosCtlStatus(DISABLE);
@@ -162,8 +175,8 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
         else if(GetPosControlStatus() == POS_BRAKE)
         {
             //减速刹车
-            velCtlTarget.x -= velCtlTarget.x * 0.06f;
-            velCtlTarget.y -= velCtlTarget.y * 0.06f;
+            velCtlTarget.x -= velCtlTarget.x * 0.05f;
+            velCtlTarget.y -= velCtlTarget.y * 0.05f;
 	        
             //飞机速度小于一定值或超出一定时间则认为刹车完成
             if((abs(GetCopterVelocity().x) < 20 && abs(GetCopterVelocity().y) < 20) || GetSysTimeMs() - lastTimePosChanged < 3000)
