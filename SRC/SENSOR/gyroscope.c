@@ -13,6 +13,8 @@
 #include "parameter.h"
 #include "accelerometer.h"
 #include "faultDetect.h"
+#include "flightStatus.h"
+#include "message.h"
 
 GYROSCOPE_t gyro;
 
@@ -47,12 +49,15 @@ void GyroPreTreatInit(void)
 *形    参: 陀螺仪原始数据 陀螺仪预处理数据指针
 *返 回 值: 无
 **********************************************************************************************************/
-void GyroDataPreTreat(Vector3f_t gyroRaw, Vector3f_t* gyroData, Vector3f_t* gyroLpfData)
+void GyroDataPreTreat(Vector3f_t gyroRaw, float temperature, Vector3f_t* gyroData, Vector3f_t* gyroLpfData)
 {	
 	gyro.data = gyroRaw;
 
     //检测陀螺仪是否工作正常
     GyroDetectCheck(gyroRaw);
+	
+	//获取温度值
+	gyro.temperature = temperature;
 	
 	//零偏误差校准
 	gyro.data.x -= gyro.cali.offset.x;
@@ -81,6 +86,7 @@ void GyroCalibration(Vector3f_t gyroRaw)
 	static float gyro_sum[3] = {0, 0, 0};
 	Vector3f_t gyro_cali_temp, gyro_raw_temp;
 	static int16_t count = 0;
+	static uint8_t staticFlag;
 	
 	if(!gyro.cali.should_cali)
 		return;
@@ -91,11 +97,19 @@ void GyroCalibration(Vector3f_t gyroRaw)
 	gyro_sum[1] += gyro_raw_temp.y;
 	gyro_sum[2] += gyro_raw_temp.z;
 	count++;
+    
+    gyro.cali.step = 1;
+    
+	//陀螺仪校准过程中如果检测到飞机不是静止状态则认为校准失败
+	if(GetPlaceStatus() != STATIC)
+	{
+		staticFlag = 1;
+	}
 	
 	if(count == CALIBRATING_GYRO_CYCLES)
 	{
-		count = 0;
-		gyro.cali.should_cali = 0;
+		count = 0;  
+        gyro.cali.step = 2;
 		
 		gyro_cali_temp.x = gyro_sum[0] / CALIBRATING_GYRO_CYCLES;
 		gyro_cali_temp.y = gyro_sum[1] / CALIBRATING_GYRO_CYCLES;
@@ -106,7 +120,16 @@ void GyroCalibration(Vector3f_t gyroRaw)
 		
 		//检测校准数据是否有效		
 		if((abs(gyro_raw_temp.x - gyro_cali_temp.x) + abs(gyro_raw_temp.x - gyro_cali_temp.x)
-			+ abs(gyro_raw_temp.x - gyro_cali_temp.x)) < 10)
+			+ abs(gyro_raw_temp.x - gyro_cali_temp.x)) < 0.6f && !staticFlag)
+		{
+			gyro.cali.success = 1;
+		}	
+		else
+		{
+			gyro.cali.success = 0;
+		}
+		
+		if(gyro.cali.success)
 		{
 			gyro.cali.offset.x = gyro_cali_temp.x;
 			gyro.cali.offset.y = gyro_cali_temp.y;
@@ -116,7 +139,15 @@ void GyroCalibration(Vector3f_t gyroRaw)
 			ParamUpdateData(PARAM_GYRO_OFFSET_X, &gyro.cali.offset.x);
 			ParamUpdateData(PARAM_GYRO_OFFSET_Y, &gyro.cali.offset.y);
 			ParamUpdateData(PARAM_GYRO_OFFSET_Z, &gyro.cali.offset.z);
-		}		
+		}
+		
+		staticFlag = 0;		
+		
+		//发送校准结果
+		MessageSensorCaliFeedbackEnable(GYRO, gyro.cali.step, gyro.cali.success);
+		
+		gyro.cali.should_cali = 0;
+		gyro.cali.step = 0;   
 	}
 }
 
@@ -129,6 +160,17 @@ void GyroCalibration(Vector3f_t gyroRaw)
 void GyroCalibrateEnable(void)
 {
 	gyro.cali.should_cali = 1;
+}
+
+/**********************************************************************************************************
+*函 数 名: GetGyroCaliStatus
+*功能说明: 陀螺仪校准状态
+*形    参: 无 
+*返 回 值: 状态 0：不在校准中 非0：校准中
+**********************************************************************************************************/
+uint8_t GetGyroCaliStatus(void)
+{
+	return gyro.cali.step;
 }
 
 /**********************************************************************************************************
@@ -151,6 +193,28 @@ Vector3f_t GyroGetData(void)
 Vector3f_t GyroLpfGetData(void)
 {
     return gyro.dataLpf;
+}
+
+/**********************************************************************************************************
+*函 数 名: GyroGetTemp
+*功能说明: 获取陀螺仪温度
+*形    参: 无 
+*返 回 值: 温度值
+**********************************************************************************************************/
+float GyroGetTemp(void)
+{
+    return gyro.temperature;
+}
+
+/**********************************************************************************************************
+*函 数 名: GetGyroOffsetCaliData
+*功能说明: 获取陀螺仪零偏校准数据
+*形    参: 无 
+*返 回 值: 校准参数
+**********************************************************************************************************/
+Vector3f_t GetGyroOffsetCaliData(void)
+{
+    return gyro.cali.offset;
 }
 
 /**********************************************************************************************************

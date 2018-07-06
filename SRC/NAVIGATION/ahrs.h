@@ -16,7 +16,13 @@ typedef struct{
     float      vectorYawKI;	
     
     Vector3f_t accEf;
+	Vector3f_t accEfLpf;
     Vector3f_t accBfOffset;
+	
+	Vector3f_t gyroEf;
+	
+	Vector3f_t centripetalAcc;
+    Vector3f_t centripetalAccBf;
 }AHRS_t;
 
 void AHRSInit(void);
@@ -26,9 +32,8 @@ void EarthFrameToBodyFrame(Vector3f_t angle, Vector3f_t vector, Vector3f_t* vect
 
 Vector3f_t GetCopterAngle(void);
 Vector3f_t GetCopterAccEf(void);
-void Data_Send_Test(void);
-
-extern AHRS_t ahrs;
+Vector3f_t GetCopterAccEfLpf(void);
+Vector3f_t GetCentripetalAcc(void);
 
 #endif
 

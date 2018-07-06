@@ -17,11 +17,12 @@
 #include "navigation.h"
 #include "board.h"
 
-#define MAXANGLE  400               //最大飞行角度：40°
-#define MAXRCDATA 450
 #define ALT_SPEED_UP_MAX	500	    //最大上升速度：5m/s
 #define ALT_SPEED_DOWN_MAX	300     //最大下降速度：3m/s
 #define HORIZON_SPEED_MAX	800     //最大水平飞行速度：8m/s
+
+static Vector3f_t posCtlTarget;
+static float yawHold;
 
 static void ManualControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget);
 static void SemiAutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget);
@@ -67,6 +68,13 @@ void UserControl(void)
     {
         //自动档（定点）
         AutoControl(rcCommand, &rcTarget);       
+    }
+    else
+    {
+        //在非用户控制模式下，更新当前位置目标
+        posCtlTarget = GetCopterPosition();       
+
+        yawHold = GetCopterAngle().z;        
     }
 
     //设置目标控制量
@@ -128,8 +136,8 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
     static int16_t rcDeadband     = 50;
 	static float velRate          = (float)HORIZON_SPEED_MAX / MAXRCDATA;
     static uint8_t posHoldChanged = 0;
-    static Vector3f_t velCtlTarget;
-    static Vector3f_t posCtlTarget;    
+    static float brakeFilter = 0;
+    static Vector3f_t velCtlTarget;  
 
     //航向控制
     YawControl(rcCommand, rcTarget);
@@ -146,12 +154,15 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
         rcCommand.pitch = ApplyDeadbandInt(rcCommand.pitch, rcDeadband);
         
         //摇杆量转为目标速度，低通滤波改变操控手感
-        velCtlTarget.x = velCtlTarget.x * 0.992f + (rcCommand.pitch * velRate) * 0.008f;
-        velCtlTarget.y = velCtlTarget.y * 0.992f + (rcCommand.roll * velRate) * 0.008f;
+        velCtlTarget.x = velCtlTarget.x * 0.998f + ((float)rcCommand.pitch * velRate) * 0.002f;
+        velCtlTarget.y = velCtlTarget.y * 0.998f + ((float)rcCommand.roll * velRate) * 0.002f;
         
         //直接控制速度，禁用位置控制
         SetPosCtlStatus(DISABLE);
- 
+        
+         //更新位置内环控制目标    
+        SetPosInnerCtlTarget(velCtlTarget);
+        
         //更新位置控制目标
         posCtlTarget.x = GetCopterPosition().x;
         posCtlTarget.y = GetCopterPosition().y;
@@ -174,12 +185,15 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
         }
         else if(GetPosControlStatus() == POS_BRAKE)
         {
+            brakeFilter += 0.00001f;
+			brakeFilter = ConstrainFloat(brakeFilter, 0.002f, 0.008f);
+            
             //减速刹车
-            velCtlTarget.x -= velCtlTarget.x * 0.05f;
-            velCtlTarget.y -= velCtlTarget.y * 0.05f;
+            velCtlTarget.x -= velCtlTarget.x * brakeFilter;
+            velCtlTarget.y -= velCtlTarget.y * brakeFilter;
 	        
             //飞机速度小于一定值或超出一定时间则认为刹车完成
-            if((abs(GetCopterVelocity().x) < 20 && abs(GetCopterVelocity().y) < 20) || GetSysTimeMs() - lastTimePosChanged < 3000)
+            if((abs(GetCopterVelocity().x) < 20 && abs(GetCopterVelocity().y) < 20) || GetSysTimeMs() - lastTimePosChanged > 3000)
             {   
                 //更新位置控制状态为刹车完成
                 SetPosControlStatus(POS_BRAKE_FINISH);
@@ -192,32 +206,42 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
             //刹车完成后再缓冲一小段时间便切换为自动悬停
             if(GetSysTimeMs() - lastTimePosBrake < 1000)
             {
-                velCtlTarget.x = 0;
-                velCtlTarget.y = 0;
+                velCtlTarget.x -= velCtlTarget.x * 0.02f;
+                velCtlTarget.y -= velCtlTarget.y * 0.02f;
             }
             else
             {
                 posHoldChanged = 0;
             }
+            
+            brakeFilter = 0;
         }
+        
+        //更新位置内环控制目标    
+        SetPosInnerCtlTarget(velCtlTarget);
         
         //更新位置控制目标
         posCtlTarget.x = GetCopterPosition().x;
-        posCtlTarget.y = GetCopterPosition().y;        
+        posCtlTarget.y = GetCopterPosition().y;         
     }
     else
-    {       
+    {     
+        //待机状态下不断刷新位置目标
+        if(GetFlightStatus() == STANDBY)
+        {
+            posCtlTarget.x = GetCopterPosition().x;
+            posCtlTarget.y = GetCopterPosition().y;         
+        }
+        
         //使能位置控制
         SetPosCtlStatus(ENABLE);
      
         //更新位置控制状态
         SetPosControlStatus(POS_HOLD);     
+        
+        //更新位置外环控制目标
+        SetPosOuterCtlTarget(posCtlTarget);
     }     
-
-    //更新位置内环控制目标    
-    SetPosInnerCtlTarget(velCtlTarget);   
-    //更新位置外环控制目标
-    SetPosOuterCtlTarget(posCtlTarget);
 }
 
 /**********************************************************************************************************
@@ -229,7 +253,6 @@ static void AutoControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
 static void YawControl(RCCOMMAND_t rcCommand, RCTARGET_t* rcTarget)
 {
     static int16_t rcDeadband = 50;
-    static float yawHold;
     static uint8_t yawHoldChanged = 0;
     static int32_t lastTimeyawChanged = 0;
     
@@ -292,8 +315,7 @@ static void AltControl(RCCOMMAND_t rcCommand)
 	static float speedUpRate   = (float)ALT_SPEED_UP_MAX / MAXRCDATA;
 	static float speedDownRate = (float)ALT_SPEED_DOWN_MAX / MAXRCDATA;
     static uint8_t altHoldChanged = 0;
-    static float velCtlTarget     = 0;
-    static float altCtlTarget     = 0;    
+    static float velCtlTarget     = 0; 
     
     /**********************************************************************************************************
     高度控制：该模式下油门摇杆量控制上升下降速度，回中时飞机自动定高
@@ -315,8 +337,11 @@ static void AltControl(RCCOMMAND_t rcCommand)
         //直接控制速度，禁用高度控制
         SetAltCtlStatus(DISABLE);
         
-        //更新高度控制目标
-        altCtlTarget = GetCopterPosition().z;
+        //更新高度内环控制目标
+        SetAltInnerCtlTarget(velCtlTarget); 
+        
+        //更新高度目标
+        posCtlTarget.z = GetCopterPosition().z;
         
         //更新高度控制状态
         SetAltControlStatus(ALT_CHANGED);
@@ -328,7 +353,7 @@ static void AltControl(RCCOMMAND_t rcCommand)
     {	
         if(GetAltControlStatus() == ALT_CHANGED)
         {
-            velCtlTarget = GetCopterVelocity().z;
+            //velCtlTarget = GetCopterVelocity().z;
             
             //更新高度控制状态
             SetAltControlStatus(ALT_CHANGED_FINISH);    
@@ -338,30 +363,37 @@ static void AltControl(RCCOMMAND_t rcCommand)
             //油门回中后先缓冲一段时间再进入定高
             if(GetSysTimeMs() - lastTimeAltChanged < 1000)
             {
-                velCtlTarget -= velCtlTarget * 0.08f;
+                velCtlTarget -= velCtlTarget * 0.03f;
             }
             else
             {
                 altHoldChanged = 0;
             }	
 
-            //更新高度控制目标
-            altCtlTarget = GetCopterPosition().z;       
-        }        
+            //更新高度目标
+            posCtlTarget.z = GetCopterPosition().z;       
+        }  
+
+        //更新高度内环控制目标
+        SetAltInnerCtlTarget(velCtlTarget);         
     }
     else
     {       
+        //待机状态下不断刷新高度目标
+        if(GetFlightStatus() == STANDBY)
+        {
+            posCtlTarget.z = GetCopterPosition().z;   
+        }
+        
         //使能高度控制
         SetAltCtlStatus(ENABLE);
         
         //更新高度控制状态
-        SetAltControlStatus(ALT_HOLD);     
-    }   
+        SetAltControlStatus(ALT_HOLD);  
 
-    //更新高度内环控制目标
-    SetAltInnerCtlTarget(velCtlTarget); 
-    //更新高度外环控制目标
-    SetAltOuterCtlTarget(altCtlTarget);       
+        //更新高度外环控制目标
+        SetAltOuterCtlTarget(posCtlTarget.z);         
+    }             
 }
 
 

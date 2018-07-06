@@ -20,14 +20,26 @@
 #define ACC_LPF_CUT 8
 
 //传感器恒温目标值，单位为摄氏度
-#define SENSOR_TEMP_KEPT 55
+#define SENSOR_TEMP_KEPT 50
+
+//传感器类型
+enum
+{
+    GYRO,
+    ACC,
+    MAG,
+    ANGLE,
+    BARO,
+    ESC
+};
 
 typedef struct
 {
 	Vector3f_t offset;	    //零偏误差
 	Vector3f_t scale;		//比例误差
 	bool should_cali;		//传感器校准标志位
-    uint8_t step;
+    bool success;           //校准成功标志位
+    uint8_t step;           //步骤标志位
 } SENSOR_CALI_t;
 
 void ImuTempControlInit(void);

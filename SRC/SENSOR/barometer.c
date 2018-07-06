@@ -13,16 +13,20 @@
 #include "module.h"
 #include "board.h"
 #include "faultDetect.h"
+#include "navigation.h"
+#include "gps.h"
 
 typedef struct{
 	int32_t alt;
 	int32_t lastAlt;
-	float velocity;
+	float   velocity;
 	int32_t alt_offset;
+	float temperature;
 }BAROMETER_t;
 
 BAROMETER_t baro;
 
+static void BaroCompensate(int32_t* alt);
 static void BaroDetectCheck(int32_t baroAlt);
 
 /**********************************************************************************************************
@@ -35,11 +39,19 @@ void BaroDataPreTreat(void)
 {
 	static uint32_t lastTime = 0;
 	static uint16_t offset_cnt = 300;
-
+    int32_t baroAltTemp;
+    
 	float deltaT = (GetSysTimeUs() - lastTime) * 1e-6;
 	lastTime = GetSysTimeUs();
 	
-    BaroSensorRead(&baro.alt);
+    BaroSensorRead(&baroAltTemp);
+    BaroTemperatureRead(&baro.temperature);
+	
+    //飞行中的气压高度补偿
+    BaroCompensate(&baroAltTemp);
+    
+    //气压高度低通滤波
+    baro.alt = baro.alt * 0.75f + baroAltTemp * 0.25f;
     
     if(GetSysTimeMs() > 1500)
     {
@@ -54,12 +66,31 @@ void BaroDataPreTreat(void)
     
 	//读取气压高度
 	baro.alt -= baro.alt_offset;
-	//计算气压变化速度
-	baro.velocity = baro.velocity * 0.8f + ((baro.alt - baro.lastAlt) / deltaT) * 0.2f;
+	//计算气压变化速度，并进行低通滤波
+	baro.velocity = baro.velocity * 0.75f + ((baro.alt - baro.lastAlt) / deltaT) * 0.25f;
 	baro.lastAlt = baro.alt;
 
     //检测气压传感器是否工作正常
     BaroDetectCheck(baro.alt);	
+}
+
+/**********************************************************************************************************
+*函 数 名: BaroCompensate
+*功能说明: 气压高度补偿（简单处理，用于测试）
+*形    参: 无
+*返 回 值: 无
+**********************************************************************************************************/
+static void BaroCompensate(int32_t* alt)
+{
+    int16_t velocity;
+    
+    if(!GpsGetFixStatus())
+        return;
+    
+    velocity = Pythagorous2(GetCopterVelocity().x, GetCopterVelocity().y);
+    velocity = ApplyDeadbandInt(ConstrainInt16(velocity, 0, 500), 20);
+    
+    *alt -= velocity * 0.05f;
 }
 
 /**********************************************************************************************************
@@ -71,6 +102,17 @@ void BaroDataPreTreat(void)
 int32_t BaroGetAlt(void)
 {
    return baro.alt;
+}
+
+/**********************************************************************************************************
+*函 数 名: BaroGetTemp
+*功能说明: 获取气压温度数据
+*形    参: 无 
+*返 回 值: 气压温度
+**********************************************************************************************************/
+float BaroGetTemp(void)
+{
+   return baro.temperature;
 }
 
 /**********************************************************************************************************

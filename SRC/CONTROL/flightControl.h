@@ -4,6 +4,9 @@
 #include "mathTool.h"
 #include "pid.h"
 
+#define MAXANGLE  400               //最大飞行角度：40°
+#define MAXRCDATA 450
+
 enum 
 {
     ROLL_INNER,
@@ -80,8 +83,8 @@ Vector3f_t GetPosInnerCtlError(void);
 Vector3f_t GetPosOuterCtlError(void);
 
 void FlightControlReset(void);
-
-extern FLIGHTCONTROL_t fc;
+PID_t FcGetPID(uint8_t id);
+void FcSetPID(uint8_t id, PID_t pid);
 
 #endif
 

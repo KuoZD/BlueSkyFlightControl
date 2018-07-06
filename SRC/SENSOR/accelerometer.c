@@ -12,6 +12,7 @@
 #include "accelerometer.h"
 #include "parameter.h"
 #include "gaussNewton.h"
+#include "message.h"
 
 ACCELEROMETER_t acc;
 
@@ -104,7 +105,6 @@ void AccCalibration(Vector3f_t accRaw)
 	static Vector3f_t new_offset;
 	static Vector3f_t new_scale;
     static Vector3f_t samples[6];
-    bool success = true;
     
 	if(acc.cali.should_cali)
 	{
@@ -128,30 +128,39 @@ void AccCalibration(Vector3f_t accRaw)
 			samples[acc.cali.step - 1].x /= 100;
 			samples[acc.cali.step - 1].y /= 100;
 			samples[acc.cali.step - 1].z /= 100;
-			samples_count++;		
+			samples_count++;
+            //发送当前校准步骤
+            MessageSensorCaliFeedbackEnable(ACC, acc.cali.step, acc.cali.success);            
 		}		
-	}	
+	}
 
-	if(acc.cali.step == 6)
-	{
-		if(samples_count == 101)
+	if(acc.cali.step == 6 && samples_count == 101)
+	{		
+		//高斯牛顿法求解误差方程
+		GaussNewtonCalibrate(samples, &new_offset, &new_scale, 1, 20);
+
+		//判断校准参数是否正常
+		if(fabsf(new_scale.x-1.0f) > 0.1f || fabsf(new_scale.y-1.0f) > 0.1f || fabsf(new_scale.z-1.0f) > 0.1f) 
 		{
-            //高斯牛顿法求解误差方程
-            GaussNewtonCalibrate(samples, &new_offset, &new_scale, 1, 20);
-			acc.cali.step = 0;
-
-            //判断校准参数是否正常
-            if(fabsf(new_scale.x-1.0f) > 0.1f || fabsf(new_scale.y-1.0f) > 0.1f || fabsf(new_scale.z-1.0f) > 0.1f) 
-            {
-                success = false;
-            }
-            if(fabsf(new_offset.x) > (1 * 0.35f) || fabsf(new_offset.y) > (1 * 0.35f) || fabsf(new_offset.z) > (1 * 0.6f)) 
-            {
-                success = false;
-            }
-        }
-        
-        if(success)
+			acc.cali.success = false;
+		}
+		else if(fabsf(new_offset.x) > (1 * 0.35f) || fabsf(new_offset.y) > (1 * 0.35f) || fabsf(new_offset.z) > (1 * 0.6f)) 
+		{
+			acc.cali.success = false;
+		}
+		else
+		{
+			acc.cali.success = true;
+		}
+		
+		for(u8 i=0; i<6; i++)
+		{
+			samples[i].x = 0;
+			samples[i].y = 0;
+			samples[i].z = 0;            
+		}
+       
+        if(acc.cali.success)
         {
 			acc.cali.offset = new_offset;
 			acc.cali.scale = new_scale;
@@ -168,7 +177,39 @@ void AccCalibration(Vector3f_t accRaw)
         {
             
         }
+		
+		//发送校准结果
+		MessageSensorCaliFeedbackEnable(ACC, acc.cali.step, acc.cali.success);
+        acc.cali.step = 0;
 	}       
+}
+
+/**********************************************************************************************************
+*函 数 名: AccScaleCalibrate
+*功能说明: 加速度各轴正反比例误差校正
+*形    参: 无 
+*返 回 值: 无
+**********************************************************************************************************/
+void AccScaleCalibrate(Vector3f_t* acc)
+{
+    if(GYRO_TYPE == MPU6500)
+    {
+        if(acc->z > 0)
+            acc->z *= 1.003f;
+        else
+            acc->z *= 0.997f;
+    }
+    else if(GYRO_TYPE == ICM20689)
+    {
+        if(acc->z > 0)
+            acc->z *= 1.002f;
+        else
+            acc->z *= 0.998f;            
+    }
+    else
+    {
+      
+    }    
 }
 
 /**********************************************************************************************************
@@ -202,6 +243,8 @@ void ImuLevelCalibration(void)
 	}
 	count++;
 	
+	acc.levelCali.step = 1;
+	
 	if(count == CALIBRATING_ACC_LEVEL_CYCLES)
 	{
 		accAverage.x = acc_sum[0] / (CALIBRATING_ACC_LEVEL_CYCLES-1);
@@ -212,12 +255,15 @@ void ImuLevelCalibration(void)
 		acc_sum[2] = 0;
 		count = 0;
 		acc.levelCali.should_cali = 0;
+		acc.levelCali.step = 2;
 		
 		caliTemp.x = atan2f(accAverage.y, Pythagorous2(accAverage.x, accAverage.z));
 		caliTemp.y = atan2f(-accAverage.x, Pythagorous2(accAverage.y, accAverage.z));
 		
 		if(abs(Degrees(caliTemp.x)) < 10 && abs(Degrees(caliTemp.y)) < 10)
 		{
+			acc.levelCali.success = 1;
+			
 			acc.levelCali.scale.x = -caliTemp.x;
 			acc.levelCali.scale.y = -caliTemp.y;
 			acc.levelCali.scale.z = 0;
@@ -227,7 +273,60 @@ void ImuLevelCalibration(void)
 			ParamUpdateData(PARAM_IMU_LEVEL_Y, &acc.levelCali.scale.y);
 			ParamUpdateData(PARAM_IMU_LEVEL_Z, &acc.levelCali.scale.z);
 		}
+		else
+		{
+			acc.levelCali.success = 0;
+		}
+		
+		//发送校准结果
+		MessageSensorCaliFeedbackEnable(ANGLE, acc.levelCali.step, acc.levelCali.success);
+		
+		acc.levelCali.step = 0;
 	}    
+}
+
+/**********************************************************************************************************
+*函 数 名: AccCalibrateEnable
+*功能说明: 加速度校准使能
+*形    参: 无 
+*返 回 值: 无
+**********************************************************************************************************/
+void AccCalibrateEnable(void)
+{
+	acc.cali.should_cali = 1;
+}
+
+/**********************************************************************************************************
+*函 数 名: LevelCalibrateEnable
+*功能说明: 水平校准使能
+*形    参: 无 
+*返 回 值: 无
+**********************************************************************************************************/
+void LevelCalibrateEnable(void)
+{
+	acc.levelCali.should_cali = 1;
+}
+
+/**********************************************************************************************************
+*函 数 名: GetAccOffsetCaliData
+*功能说明: 获取加速度零偏校准数据
+*形    参: 无 
+*返 回 值: 校准参数
+**********************************************************************************************************/
+Vector3f_t GetAccOffsetCaliData(void)
+{
+    return acc.cali.offset;
+}
+
+/**********************************************************************************************************
+*函 数 名: GetAccScaleCaliData
+*功能说明: 获取加速度比例校准数据
+*形    参: 无 
+*返 回 值: 校准参数
+**********************************************************************************************************/
+Vector3f_t GetAccScaleCaliData(void)
+{
+    return acc.cali.scale;
 }
 
 /**********************************************************************************************************

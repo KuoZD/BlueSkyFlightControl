@@ -11,7 +11,6 @@
 **********************************************************************************************************/
 #include "rc.h"
 #include "flightStatus.h"
-#include "board.h"
 #include "drv_sbus.h"
 #include "drv_ppm.h"
 #include "accelerometer.h"
@@ -51,20 +50,19 @@ static void RcCheckFailsafe(void);
 **********************************************************************************************************/
 void RcInit(void)
 {
-	#if( RC_PROTOCOL == SBUS )
+	if(RC_PROTOCOL == SBUS)
 		Sbus_SetRcDataCallback(RcDataUpdate);
-	#elif ( RC_PROTOCOL == PPM )
+	else if(RC_PROTOCOL == PPM)
         PPM_SetRcDataCallback(RcDataUpdate);
-	#endif
     
     //设置各辅助通道对应的飞行模式
     rcAuxMode[AUX1][LOW]  = MANUAL;
     rcAuxMode[AUX1][MID]  = SEMIAUTO;
     rcAuxMode[AUX1][HIGH] = AUTO;	
     
-    rcAuxMode[AUX2][LOW]  = AUTO;
-    rcAuxMode[AUX2][MID]  = AUTOLAND;
-    rcAuxMode[AUX2][HIGH] = RETURNTOHOME;	
+    rcAuxMode[AUX2][LOW]  = 0xFF;//AUTO;
+    rcAuxMode[AUX2][MID]  = 0xFF;//AUTOLAND;
+    rcAuxMode[AUX2][HIGH] = 0xFF;//RETURNTOHOME;	
 
     rcAuxMode[AUX3][LOW]  = 0xFF;
     rcAuxMode[AUX3][MID]  = 0xFF;
@@ -132,6 +130,17 @@ static void RcCommandUpdate(void)
         rcCommand.yaw      = 0;
         rcCommand.throttle = (rcData.throttle - 1000) * 2;         
     }
+}
+
+/**********************************************************************************************************
+*函 数 名: GetRcDATA
+*功能说明: 获取摇杆数据
+*形    参: 无
+*返 回 值: 摇杆数据
+**********************************************************************************************************/
+RCDATA_t GetRcData(void)
+{
+    return rcData;
 }
 
 /**********************************************************************************************************
@@ -225,7 +234,7 @@ static void RcCheckSticks(void)
 **********************************************************************************************************/
 static void RcCheckAux(void)
 {
-	uint8_t auxStatus[12];
+	static uint8_t auxStatus[12];
     
     //辅助通道1检测
     if(rcData.aux1 > RC_LEGAL_MIN && rcData.aux1 < RC_LEGAL_MAX)

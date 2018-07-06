@@ -16,6 +16,10 @@
 #include "gps.h"
 #include "flightStatus.h"
 #include "accelerometer.h"
+#include "navigation.h"
+
+#include "FreeRTOS.h"
+#include "task.h"
 
 AHRS_t ahrs;
 Kalman_t kalmanRollPitch, kalmanYaw;
@@ -24,8 +28,10 @@ static void AttitudeEstimateRollPitch(Vector3f_t deltaAngle, Vector3f_t acc);
 static void AttitudeEstimateYaw(Vector3f_t deltaAngle, Vector3f_t mag);
 static void KalmanRollPitchInit(void);
 static void KalmanYawInit(void);
-static void TransAccToEarthFrame(Vector3f_t angle, Vector3f_t acc, Vector3f_t* accEf, Vector3f_t* accBfOffset);
-static Vector3f_t AccSportCompensate(Vector3f_t acc);
+static void TransAccToEarthFrame(Vector3f_t angle, Vector3f_t acc, Vector3f_t* accEf, Vector3f_t* accEfLpf, Vector3f_t* accBfOffset);
+static Vector3f_t AccSportCompensate(Vector3f_t acc, Vector3f_t sportAccEf, Vector3f_t angle, Vector3f_t accBfOffset);
+static void GyroEfUpdate(Vector3f_t gyro, Vector3f_t angle, Vector3f_t* gyroEf);
+static void CentripetalAccUpdate(Vector3f_t* centripetalAcc, Vector3f_t velocity, float gyroYawEf);
 
 /**********************************************************************************************************
 *函 数 名: AHRSInit
@@ -108,14 +114,19 @@ void AttitudeEstimate(Vector3f_t gyro, Vector3f_t acc, Vector3f_t mag)
 	deltaAngle.x = Radians(gyro.x * deltaT); 
 	deltaAngle.y = Radians(gyro.y * deltaT); 
 	deltaAngle.z = Radians(gyro.z * deltaT);	    
-     
+    
     //运动加速度补偿
-    accCompensate = AccSportCompensate(acc);
+    accCompensate = AccSportCompensate(acc, GetSportAccEf(), ahrs.angle, ahrs.accBfOffset);
     
     //加速度零偏补偿
     accCompensate.x -= ahrs.accBfOffset.x;
     accCompensate.y -= ahrs.accBfOffset.y;
     accCompensate.z -= ahrs.accBfOffset.z;    
+
+    //向心加速度误差补偿
+    accCompensate.x -= ahrs.centripetalAccBf.x;
+    accCompensate.y -= ahrs.centripetalAccBf.y;
+    //accCompensate.z -= ahrs.centripetalAcc.z;
     
     //俯仰横滚角估计
     AttitudeEstimateRollPitch(deltaAngle, accCompensate);
@@ -124,7 +135,14 @@ void AttitudeEstimate(Vector3f_t gyro, Vector3f_t acc, Vector3f_t mag)
     AttitudeEstimateYaw(deltaAngle, mag);
     
     //计算飞行器在地理坐标系下的运动加速度
-    TransAccToEarthFrame(ahrs.angle, acc, &ahrs.accEf, &ahrs.accBfOffset);
+    TransAccToEarthFrame(ahrs.angle, acc, &ahrs.accEf, &ahrs.accEfLpf, &ahrs.accBfOffset);
+    
+    //计算飞行器在地理坐标系下的角速度
+    GyroEfUpdate(gyro, ahrs.angle, &ahrs.gyroEf);
+    
+    //计算飞行过程中产生的向心加速度误差
+    CentripetalAccUpdate(&ahrs.centripetalAcc, GetCopterVelocity(), ahrs.gyroEf.z);
+    EarthFrameToBodyFrame(ahrs.angle, ahrs.centripetalAcc, &ahrs.centripetalAccBf);
 }
 
 /**********************************************************************************************************
@@ -150,6 +168,13 @@ static void KalmanRollPitchInit(void)
     KalmanStateTransMatSet(&kalmanRollPitch, fMatInit);
     KalmanObserveMapMatSet(&kalmanRollPitch, hMatInit);
     
+    //状态滑动窗口，用于解决卡尔曼状态估计量与观测量之间的相位差问题
+    kalmanRollPitch.slidWindowSize = 1;
+    kalmanRollPitch.statusSlidWindow = pvPortMalloc(kalmanRollPitch.slidWindowSize * sizeof(kalmanRollPitch.status));
+    kalmanRollPitch.fuseDelay.x = 1;
+    kalmanRollPitch.fuseDelay.y = 1;
+    kalmanRollPitch.fuseDelay.z = 1;
+    
     //陀螺仪积分补偿系数
     ahrs.vectorRollPitchKI = 0.00001f;
 }
@@ -162,7 +187,7 @@ static void KalmanRollPitchInit(void)
 **********************************************************************************************************/
 static void KalmanYawInit(void)
 {
-    float qMatInit[9] = {0.0001, 0, 0, 0, 0.0001, 0, 0, 0, 0.0001};
+    float qMatInit[9] = {0.001, 0, 0, 0, 0.001, 0, 0, 0, 0.001};
     float rMatInit[9] = {3000, 0,  0, 0, 3000, 0, 0, 0, 3000};
     float pMatInit[9] = {0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5};
     float fMatInit[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -176,6 +201,13 @@ static void KalmanYawInit(void)
     KalmanCovarianceMatSet(&kalmanYaw, pMatInit);    
     KalmanStateTransMatSet(&kalmanYaw, fMatInit);
     KalmanObserveMapMatSet(&kalmanYaw, hMatInit);
+ 
+    //状态滑动窗口，用于解决卡尔曼状态估计量与观测量之间的相位差问题
+    kalmanYaw.slidWindowSize = 1;
+    kalmanYaw.statusSlidWindow = pvPortMalloc(kalmanYaw.slidWindowSize * sizeof(kalmanYaw.status));
+    kalmanYaw.fuseDelay.x = 1;
+    kalmanYaw.fuseDelay.y = 1;
+    kalmanYaw.fuseDelay.z = 1;
     
     //陀螺仪积分补偿系数
     ahrs.vectorYawKI = 0.00002f;
@@ -195,9 +227,9 @@ static void AttitudeEstimateRollPitch(Vector3f_t deltaAngle, Vector3f_t acc)
 	static float vectorErrorIntRate = 0.0005f;
 
     //测量噪声协方差矩阵自适应
-	kalmanRollPitch.r[0] = 3500 * (1 + ConstrainFloat(abs(1 - GetAccMag()) * 3, 0, 2));
-	kalmanRollPitch.r[4] = 3500 * (1 + ConstrainFloat(abs(1 - GetAccMag()) * 3, 0, 2));	
-	kalmanRollPitch.r[8] = 3500 * (1 + ConstrainFloat(abs(1 - GetAccMag()) * 3, 0, 2));
+	kalmanRollPitch.r[0] = Sq(45 * (1 + ConstrainFloat(abs(1 - GetAccMag()) * 3, 0, 2)));
+	kalmanRollPitch.r[4] = Sq(45 * (1 + ConstrainFloat(abs(1 - GetAccMag()) * 3, 0, 2)));	
+	kalmanRollPitch.r[8] = Sq(45 * (1 + ConstrainFloat(abs(1 - GetAccMag()) * 3, 0, 2)));
     
 	//用向量叉积误差积分来补偿陀螺仪零偏噪声
 	deltaAngle.x += ahrs.vectorRollPitchErrorInt.x * ahrs.vectorRollPitchKI;
@@ -296,9 +328,9 @@ static void AttitudeEstimateYaw(Vector3f_t deltaAngle, Vector3f_t mag)
 	ahrs.vectorYawErrorInt.y += vectorError.y * vectorErrorIntRate;
 	ahrs.vectorYawErrorInt.z += vectorError.z * vectorErrorIntRate;
     //积分限幅
-	ahrs.vectorYawErrorInt.x = ConstrainFloat(ahrs.vectorYawErrorInt.x, -0.3f, 0.3f);
-	ahrs.vectorYawErrorInt.y = ConstrainFloat(ahrs.vectorYawErrorInt.y, -0.3f, 0.3f);
-	ahrs.vectorYawErrorInt.z = ConstrainFloat(ahrs.vectorYawErrorInt.z, -0.3f, 0.3f);    
+	ahrs.vectorYawErrorInt.x = ConstrainFloat(ahrs.vectorYawErrorInt.x, -0.1f, 0.1f);
+	ahrs.vectorYawErrorInt.y = ConstrainFloat(ahrs.vectorYawErrorInt.y, -0.1f, 0.1f);
+	ahrs.vectorYawErrorInt.z = ConstrainFloat(ahrs.vectorYawErrorInt.z, -0.1f, 0.1f);    
 	
     //表示航向误差
 	ahrs.vectorYawError.x = ahrs.vectorYawError.x * 0.999f + (mag.x - ahrs.vectorYaw.x) * 0.001f;
@@ -348,10 +380,10 @@ void EarthFrameToBodyFrame(Vector3f_t angle, Vector3f_t vector, Vector3f_t* vect
 /**********************************************************************************************************
 *函 数 名: TransAccToEarthFrame
 *功能说明: 转换加速度到地理坐标系，并去除重力加速度
-*形    参: 当前飞机姿态 加速度 地理坐标系下的加速度
+*形    参: 当前飞机姿态 加速度 地理系加速度 地理系加速度低通滤波 加速度零偏
 *返 回 值: 无
 **********************************************************************************************************/
-static void TransAccToEarthFrame(Vector3f_t angle, Vector3f_t acc, Vector3f_t* accEf, Vector3f_t* accBfOffset)
+static void TransAccToEarthFrame(Vector3f_t angle, Vector3f_t acc, Vector3f_t* accEf, Vector3f_t* accEfLpf, Vector3f_t* accBfOffset)
 {
 	static uint16_t offset_cnt = 8000;	//计算零偏的次数
     static Vector3f_t accAngle;   //用于计算初始零偏
@@ -375,31 +407,22 @@ static void TransAccToEarthFrame(Vector3f_t angle, Vector3f_t acc, Vector3f_t* a
         acc.z -= (gravityBf.z + accBfOffset->z);
         
         //加速度正反轴比例误差补偿
-//        if(GYRO_TYPE == MPU6500)
-//        {
-//            if(acc.x > 0)
-//                acc.x *= 1.002f;
-//            else
-//                acc.x *= 0.998f;
-//            
-//            if(acc.z > 0)
-//                acc.z *= 1.02f;
-//            else
-//                acc.z *= 0.98f;
-//        }
-//        else
-//        {
-//            if(acc.z > 0)
-//                acc.z *= 1.015f;
-//            else
-//                acc.z *= 0.985f;            
-//        }
+        //AccScaleCalibrate(&acc);
         
         //转化加速度到地理坐标系
         BodyFrameToEarthFrame(angle, acc, accEf);
         
+        //向心加速度误差补偿
+        accEf->x -= ahrs.centripetalAcc.x;
+        accEf->y -= ahrs.centripetalAcc.y;
+        
         //转换坐标系（西北天）到东北天
         accEf->y = -accEf->y;	
+		
+		//地理系加速度低通滤波（主要用于调试观察）
+		accEfLpf->x = accEfLpf->x * 0.999f + accEf->x * 0.001f;
+		accEfLpf->y = accEfLpf->y * 0.999f + accEf->y * 0.001f;
+		accEfLpf->z = accEfLpf->z * 0.999f + accEf->z * 0.001f;
     }
     
 	//系统初始化时，计算加速度零偏
@@ -440,32 +463,69 @@ static void TransAccToEarthFrame(Vector3f_t angle, Vector3f_t acc, Vector3f_t* a
 /**********************************************************************************************************
 *函 数 名: AccSportCompensate
 *功能说明: 运动加速度补偿
-*形    参: 加速度
+*形    参: 加速度 地理系运动加速度 姿态角 机体系加速度零偏
 *返 回 值: 经过补偿的加速度
 **********************************************************************************************************/
-static Vector3f_t AccSportCompensate(Vector3f_t acc)
+static Vector3f_t AccSportCompensate(Vector3f_t acc, Vector3f_t sportAccEf, Vector3f_t angle, Vector3f_t accBfOffset)
 {
-    Vector3f_t sportAccEf, sportAccBf;
+    Vector3f_t sportAccBf;
     
-    //获取运动加速度
-    sportAccEf    = GetSportAccEf();
-    //转换到机体坐标系   
-    EarthFrameToBodyFrame(ahrs.angle, sportAccEf, &sportAccBf);
+    //转换运动加速度到机体坐标系   
+    EarthFrameToBodyFrame(angle, sportAccEf, &sportAccBf);
+    
     //减去加速度零偏
-    sportAccBf.x -= ahrs.accBfOffset.x;
-    sportAccBf.y -= ahrs.accBfOffset.y;    
-    sportAccBf.z -= ahrs.accBfOffset.z;
+    sportAccBf.x -= accBfOffset.x;
+    sportAccBf.y -= accBfOffset.y;    
+    sportAccBf.z -= accBfOffset.z;
     
     //应用死区
     sportAccBf.x = ApplyDeadbandFloat(sportAccBf.x, 0.03f);
     sportAccBf.y = ApplyDeadbandFloat(sportAccBf.y, 0.03f);
     sportAccBf.z = ApplyDeadbandFloat(sportAccBf.z, 0.03f);
+    
     //补偿到姿态估计主回路中的加速度
     acc.x = acc.x - sportAccBf.x * 0.95f;
     acc.y = acc.y - sportAccBf.y * 0.95f;
     acc.z = acc.z - sportAccBf.z * 0.95f;   
 
     return acc;
+}
+
+/**********************************************************************************************************
+*函 数 名: GyroEfUpdate
+*功能说明: 计算机体的地理系角速度
+*形    参: 角速度 机体角度 地理系角速度指针
+*返 回 值: 无
+**********************************************************************************************************/
+static void GyroEfUpdate(Vector3f_t gyro, Vector3f_t angle, Vector3f_t* gyroEf)
+{
+    BodyFrameToEarthFrame(angle, gyro, gyroEf);
+}
+
+/**********************************************************************************************************
+*函 数 名: CentripetalAccUpdate
+*功能说明: 计算圆周运动时产生的向心加速度误差
+*形    参: 向心加速度指针 飞行速度 地理系的z轴加速度
+*返 回 值: 无
+**********************************************************************************************************/
+static void CentripetalAccUpdate(Vector3f_t* centripetalAcc, Vector3f_t velocity, float gyroYawEf)
+{    
+    if(GpsGetFixStatus() == true)
+    {
+        centripetalAcc->x = velocity.y * 0.01f * Radians(gyroYawEf) / GRAVITY_ACCEL;
+        centripetalAcc->y = velocity.x * 0.01f * Radians(gyroYawEf) / GRAVITY_ACCEL;
+        centripetalAcc->z = 0;
+    }
+    else
+    {
+        centripetalAcc->x = 0;
+        centripetalAcc->y = 0;
+        centripetalAcc->z = 0;
+    }
+    
+    centripetalAcc->x = ConstrainFloat(centripetalAcc->x, -1, 1);
+    centripetalAcc->y = ConstrainFloat(centripetalAcc->y, -1, 1);
+    centripetalAcc->z = ConstrainFloat(centripetalAcc->z, -1, 1);    
 }
 
 /**********************************************************************************************************
@@ -480,6 +540,17 @@ Vector3f_t GetCopterAccEf(void)
 }
 
 /**********************************************************************************************************
+*函 数 名: GetCopterAccEfLpf
+*功能说明: 获取地理系运动加速度的低通滤波值
+*形    参: 无
+*返 回 值: 加速度
+**********************************************************************************************************/
+Vector3f_t GetCopterAccEfLpf(void)
+{
+    return ahrs.accEfLpf;
+}
+
+/**********************************************************************************************************
 *函 数 名: GetCopterAngle
 *功能说明: 获取表示飞行器姿态的欧拉角
 *形    参: 无
@@ -490,4 +561,14 @@ Vector3f_t GetCopterAngle(void)
     return ahrs.angle;
 }
 
+/**********************************************************************************************************
+*函 数 名: GetCentripetalAcc
+*功能说明: 获取向心加速度
+*形    参: 无
+*返 回 值: 向心加速度
+**********************************************************************************************************/
+Vector3f_t GetCentripetalAcc(void)
+{
+    return ahrs.centripetalAcc;
+}
 

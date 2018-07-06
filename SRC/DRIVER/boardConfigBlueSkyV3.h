@@ -16,43 +16,50 @@
 /**********************************************************************************************************
 *传感器安装方向
 **********************************************************************************************************/
-#define GYRO_ROTATION       ROTATION_YAW_270
-#define ACC_ROTATION        ROTATION_YAW_270
+#define GYRO_ROTATION       ROTATION_NONE//ROTATION_YAW_270
+#define ACC_ROTATION        ROTATION_NONE//ROTATION_YAW_270
 #define MAG_ROTATION        ROTATION_ROLL_180_YAW_90
 
 /**********************************************************************************************************
 *传感器配置
 **********************************************************************************************************/
-#define GYRO_TYPE            ICM20689
-#define BARO_TYPE            MS5611    
-#define MAG_TYPE             QMC5883
+#define GYRO_TYPE            ICM20689       //陀螺仪型号
+#define BARO_TYPE            MS5611         //气压计型号
+#define MAG_TYPE             QMC5883        //罗盘型号
 
-#define GYRO_SPI             1
+#define configUSE_SENSORHEAT 1              //是否使用传感器恒温
+
+#define GYRO_SPI             1              //陀螺仪SPI配置
 #define GYRO_CS_GPIO         GPIOC
 #define GYRO_CS_PIN          GPIO_Pin_2
 
-#define TEMP_TIM_FREQ        21000000
-#define TEMP_TIM_PERIOD      52499
-#define TEMP_TIM             2
-#define TEMP_CH              2
-
-#define BARO_SPI             1
+#define BARO_SPI             1              //气压计SPI配置
 #define BARO_CS_GPIO         GPIOC
 #define BARO_CS_PIN          GPIO_Pin_3
 
-#define MAG_I2C              1
-#define GPS_UART             3
-#define DATA_UART            1
-#define TOF_UART             2
-#define SBUS_UART            6
+#define MAG_I2C              1              //磁力计I2C配置
 
-#define ESC_PROTOCOL         PWM
+#define GPS_UART             3              //GPS串口配置
+#define GPS_BAUDRATE         230400
+#define DATA_UART            1              //数据链串口配置
+#define DATA_BAUDRATE        115200
+#define TOF_UART             2              //TOF模块串口配置
+#define TOF_BAUDRATE         115200
+#define SBUS_UART            6              //SBUS接收机串口配置
+#define SBUS_BAUDRATE        100000
+
+#define ESC_PROTOCOL         PWM            //电调输出信号协议选择
 //#define ESC_PROTOCOL         DSHOT600
 
-#define RC_PROTOCOL		     SBUS
+#define RC_PROTOCOL		     SBUS           //遥控接收方式选择
 //#define RC_PROTOCOL		     PPM
 
-#define PWM_TIM_FREQ         21000000
+#define TEMP_TIM_FREQ        500000         //传感器恒温PWM输出定时器配置
+#define TEMP_TIM_PERIOD      5000
+#define TEMP_TIM             2
+#define TEMP_CH              2
+
+#define PWM_TIM_FREQ         21000000       //电机输出PWM输出定时器配置
 #define PWM_TIM_PERIOD       43000  //488Hz
 #define PWM1_TIM             3
 #define PWM1_CH              1
@@ -63,13 +70,25 @@
 #define PWM4_TIM             3
 #define PWM4_CH              4
 
-#define PPM_TIM_FREQ         1000000
+#define PPM_TIM_FREQ         1000000        //PPM输入捕获定时器配置
 #define PPM_TIM_PERIOD       0xFFFF
 #define PPM_TIM              1
 #define PPM_CH               1
 #define PPM_GPIO             GPIOA
 #define PPM_PIN              GPIO_Pin_8
 #define PPM_PINSOURCE        GPIO_PinSource8
+
+#define ADC_VOLTAGE          ADC1           //电池电压采集ADC配置
+#define ADC_VOLTAGE_CHAN     ADC_Channel_4
+#define ADC_VOLTAGE_GPIO     GPIOA
+#define ADC_VOLTAGE_PIN      GPIO_Pin_4
+#define ADC_VOLTAGE_COEF     10.0f
+
+#define ADC_CURRENT          ADC2           //电池电流采集ADC配置
+#define ADC_CURRENT_CHAN     ADC_Channel_0
+#define ADC_CURRENT_GPIO     GPIOA
+#define ADC_CURRENT_PIN      GPIO_Pin_0
+#define ADC_CURRENT_COEF     10.0f
 
 /**********************************************************************************************************
 *单片机Flash存储区域分配
@@ -108,20 +127,9 @@
 /**********************************************************************************************************
 *外设使能配置
 **********************************************************************************************************/
-#define configUSE_GPIOA      1
-#define configUSE_GPIOB      1
-#define configUSE_GPIOC      1
-#define configUSE_GPIOD      1
-#define configUSE_GPIOE      0
-#define configUSE_GPIOF      0
-#define configUSE_GPIOG      0
-
-#define configUSE_USART1     1
-#define configUSE_USART2     1
-#define configUSE_USART3     1
-#define configUSE_UART4      0
-#define configUSE_UART5      0
-#define configUSE_USART6     1
+#define configUSE_ADC1       1
+#define configUSE_ADC2       1
+#define configUSE_ADC3       0
 
 #define configUSE_SPI1       1
 #define configUSE_SPI2       0
@@ -158,7 +166,6 @@
 #define USART1_PINSOURCE_RX     GPIO_PinSource10
 #define USART1_PIN_TX           GPIO_Pin_9
 #define USART1_PIN_RX           GPIO_Pin_10
-#define USART1_BAUDRATE         115200
 #define USART1_IRQ_PRIORITY     3
 
 #define USART2_GPIO             GPIOA
@@ -166,7 +173,6 @@
 #define USART2_PINSOURCE_RX     GPIO_PinSource3
 #define USART2_PIN_TX           GPIO_Pin_2
 #define USART2_PIN_RX           GPIO_Pin_3
-#define USART2_BAUDRATE         115200
 #define USART2_IRQ_PRIORITY     3
 
 #define USART3_GPIO             GPIOB
@@ -174,7 +180,6 @@
 #define USART3_PINSOURCE_RX     GPIO_PinSource11
 #define USART3_PIN_TX           GPIO_Pin_10
 #define USART3_PIN_RX           GPIO_Pin_11
-#define USART3_BAUDRATE         230400
 #define USART3_IRQ_PRIORITY     3
 
 #define UART4_GPIO              GPIOA
@@ -182,7 +187,6 @@
 #define UART4_PINSOURCE_RX      GPIO_PinSource1
 #define UART4_PIN_TX            GPIO_Pin_0
 #define UART4_PIN_RX            GPIO_Pin_1
-#define UART4_BAUDRATE          230400
 #define UART4_IRQ_PRIORITY      3
 
 #define UART5_GPIO              GPIOA
@@ -190,7 +194,6 @@
 #define UART5_PINSOURCE_RX      GPIO_PinSource1
 #define UART5_PIN_TX            GPIO_Pin_6
 #define UART5_PIN_RX            GPIO_Pin_7
-#define UART5_BAUDRATE          115200
 #define UART5_IRQ_PRIORITY      3
 
 #define USART6_GPIO             GPIOC
@@ -198,7 +201,6 @@
 #define USART6_PINSOURCE_RX     GPIO_PinSource7
 #define USART6_PIN_TX           GPIO_Pin_6
 #define USART6_PIN_RX           GPIO_Pin_7
-#define USART6_BAUDRATE         100000
 #define USART6_IRQ_PRIORITY     3
 /**********************************************************************************************************
 *SPI引脚及参数配置

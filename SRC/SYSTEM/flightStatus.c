@@ -14,6 +14,8 @@
 #include "navigation.h"
 #include "ahrs.h"
 #include "board.h"
+#include "gyroscope.h"
+
 typedef struct
 {
     uint8_t init;           //初始化状态
@@ -63,6 +65,13 @@ void SetArmedStatus(uint8_t status)
         //解锁检查
         if(!ArmedCheck())
             return;
+		
+		//不使用恒温的话，每次解锁时校准一下陀螺仪
+		#if(configUSE_SENSORHEAT == 0)
+		GyroCalibrateEnable();
+		SoftDelayMs(100);
+		while(GetGyroCaliStatus()){}
+		#endif
         
         //导航数据复位
         NavigationReset();
@@ -245,10 +254,10 @@ void SetFlightMode(uint8_t mode)
             //flyStatus.mode = AUTOTAKEOFF;		//自动起飞
             break;
         case    AUTOLAND:
-            //flyStatus.mode = AUTOLAND;		//自动降落
+            flyStatus.mode = AUTOLAND;		//自动降落
             break;
         case    RETURNTOHOME:
-            //flyStatus.mode = RETURNTOHOME;	//自动返航
+            flyStatus.mode = RETURNTOHOME;	//自动返航
             break;
         case    AUTOCIRCLE:
             //flyStatus.mode = AUTOCIRCLE;		//自动环绕

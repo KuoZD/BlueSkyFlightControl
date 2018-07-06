@@ -4,12 +4,21 @@
 #include "stm32f4xx.h"
 
 /**********************************************************************************************************
+*飞控软件版本
+**********************************************************************************************************/
+#define SOFTWARE_VERSION_HIGH   0
+#define SOFTWARE_VERSION_MID    3
+#define SOFTWARE_VERSION_LOW    0
+
+/**********************************************************************************************************
 *飞控硬件类型
 **********************************************************************************************************/
-enum{
-	BLUESKY_V2,
-	BLUESKY_V3,
-	MINISKY,
+enum
+{
+    BOARD_TEST,
+	BOARD_BLUESKY_V2,
+    BOARD_BLUESKY_V3,
+	BOARD_FUTURESKY
 };
 
 /**********************************************************************************************************
@@ -17,12 +26,19 @@ enum{
 **********************************************************************************************************/
 //#define BLUESKY_V2
 #define BLUESKY_V3
+//#define TESTBOARD
 
 #ifdef BLUESKY_V2
 	#include "boardConfigBlueSkyV2.h"
+    #define BOARD_TYPE BOARD_BLUESKY_V2
 #endif
 #ifdef BLUESKY_V3
 	#include "boardConfigBlueSkyV3.h"
+    #define BOARD_TYPE BOARD_BLUESKY_V3
+#endif
+#ifdef TESTBOARD
+	#include "boardConfigTest.h"
+    #define BOARD_TYPE BOARD_TEST
 #endif
 
 typedef struct
@@ -65,6 +81,12 @@ enum
     HMC5883,
     QMC5883,
     IST8310
+};
+
+enum
+{
+    SBUS,
+    PPM
 };
 
 void BoardInit(void);

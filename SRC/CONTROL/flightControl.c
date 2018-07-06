@@ -25,22 +25,22 @@ void FlightControlInit(void)
     //对于不同机型，姿态PID参数需要进行调整，高度和位置相关参数无需太大改动
     //参数大小和电调型号有较大关系（电机电调的综合响应速度影响了PID参数）
     
-    //该参数下姿态控制精度可达0.1°（悬停），机架为F330，电调为BLS，动力为御的电机和桨
+    //该参数下姿态控制精度可达0.1°（悬停），测试机架为F330和F450，电调为BLS
     //电池横放，使重量主要分布在roll轴上，因此roll的参数要稍大一些
-	PID_SetParam(&fc.pid[ROLL_INNER],  5.5, 10.0, 0.18, 30, 35);
-	PID_SetParam(&fc.pid[PITCH_INNER], 5.0, 8.0, 0.16, 30, 35);
-	PID_SetParam(&fc.pid[YAW_INNER],   8.0, 10.0, 0, 20, 35);
+	PID_SetParam(&fc.pid[ROLL_INNER],  5.5, 10.0, 0.2, 30, 35);
+	PID_SetParam(&fc.pid[PITCH_INNER], 5.0, 8.0, 0.18, 30, 35);
+	PID_SetParam(&fc.pid[YAW_INNER],   8.0, 10.0, 0, 30, 35);
 	
 	PID_SetParam(&fc.pid[ROLL_OUTER],  10.0, 0, 0, 0, 0);
 	PID_SetParam(&fc.pid[PITCH_OUTER], 8.0, 0, 0, 0, 0);
 	PID_SetParam(&fc.pid[YAW_OUTER],   6.0, 0, 0, 0, 0);	
 	
-	PID_SetParam(&fc.pid[VEL_X],	   2.0, 0.8, 0.0, 50, 30);	
-	PID_SetParam(&fc.pid[VEL_Y],       2.0, 0.8, 0.0, 50, 30);	
-	PID_SetParam(&fc.pid[VEL_Z],       3.0, 2.0, 0.01, 250, 30);	
+	PID_SetParam(&fc.pid[VEL_X],	   2.0, 0, 0, 10, 30);	
+	PID_SetParam(&fc.pid[VEL_Y],       2.0, 0, 0, 10, 30);	
+	PID_SetParam(&fc.pid[VEL_Z],       3.0, 2.0, 0.03, 300, 30);	
 
-	PID_SetParam(&fc.pid[POS_X],       1.5, 0, 0, 0, 0);
-	PID_SetParam(&fc.pid[POS_Y],       1.5, 0, 0, 0, 0);
+	PID_SetParam(&fc.pid[POS_X],       2.0, 0, 0, 0, 0);
+	PID_SetParam(&fc.pid[POS_Y],       2.0, 0, 0, 0, 0);
 	PID_SetParam(&fc.pid[POS_Z],       3.0, 0, 0, 0, 0);		
 }
 
@@ -87,10 +87,10 @@ static Vector3f_t AttitudeInnerControl(Vector3f_t gyro, float deltaT)
 	rateControlOutput.z = PID_GetPID(&fc.pid[YAW_INNER],   fc.attInnerError.z, deltaT);
 
     //限制俯仰和横滚轴的控制输出量
-	rateControlOutput.x = ConstrainInt32(rateControlOutput.x, -800, +800);	
-	rateControlOutput.y = ConstrainInt32(rateControlOutput.y, -800, +800);		
+	rateControlOutput.x = ConstrainInt32(rateControlOutput.x, -1000, +1000);	
+	rateControlOutput.y = ConstrainInt32(rateControlOutput.y, -1000, +1000);		
     //限制偏航轴控制输出量
-	rateControlOutput.z = -ConstrainInt32(rateControlOutput.z, -500, +500);	
+	rateControlOutput.z = -ConstrainInt32(rateControlOutput.z, -600, +600);	
 
     return rateControlOutput;
 }
@@ -117,7 +117,7 @@ static float AltitudeInnerControl(float velZ, float deltaT)
 	static float velLpf;
     float altInnerControlOutput;
     //悬停油门中点
-	int16_t throttleMid = 900;
+	int16_t throttleMid = 1000;
 
     /****************************************************************************************
         目前高度控制由高度环P控制以及速度环PID控制串联而成
@@ -202,7 +202,7 @@ void AttitudeOuterControl(void)
 	uint8_t    flightMode;
 	Vector3f_t angle;
 	Vector3f_t attOuterCtlValue;
-	float 	   yawRate = 0.4f;
+	float 	   yawRate = 0.35f;
         
 	//获取当前飞机的姿态角
 	angle = GetCopterAngle();
@@ -250,13 +250,13 @@ void AttitudeOuterControl(void)
     }
     else if(GetPosControlStatus() == POS_BRAKE)
     {
-        attOuterCtlValue.x = ConstrainFloat(attOuterCtlValue.x, -50, 50);
-        attOuterCtlValue.y = ConstrainFloat(attOuterCtlValue.y, -50, 50);        
+        attOuterCtlValue.x = ConstrainFloat(attOuterCtlValue.x, -120, 120);
+        attOuterCtlValue.y = ConstrainFloat(attOuterCtlValue.y, -120, 120);        
     }
     else
     {
-        attOuterCtlValue.x = ConstrainFloat(attOuterCtlValue.x, -100, 100);
-        attOuterCtlValue.y = ConstrainFloat(attOuterCtlValue.y, -100, 100);    
+        attOuterCtlValue.x = ConstrainFloat(attOuterCtlValue.x, -120, 120);
+        attOuterCtlValue.y = ConstrainFloat(attOuterCtlValue.y, -120, 120);    
     }
     
 	//若航向锁定被失能则直接将摇杆数值作为目标角速度
@@ -326,7 +326,7 @@ void AltitudeOuterControl(void)
 	altOuterCtlValue = PID_GetP(&fc.pid[POS_Z], fc.posOuterError.z);
 	
 	//PID控制输出限幅
-	altOuterCtlValue = ConstrainFloat(altOuterCtlValue, -200, 200);
+	altOuterCtlValue = ConstrainFloat(altOuterCtlValue, -200, 500);
 
     //将高度外环控制量作为高度内环的控制目标
     //若当前高度控制被禁用则不输出
@@ -376,8 +376,8 @@ void PositionInnerControl(void)
 	//PID控制输出限幅，单位：°（目标角度）
     if(GetPosControlStatus() == POS_BRAKE)
     {
-        posInnerCtlOutput.x = ConstrainFloat(posInnerCtlOutput.x, -20, 20);
-        posInnerCtlOutput.y = ConstrainFloat(posInnerCtlOutput.y, -20, 20);    
+        posInnerCtlOutput.x = ConstrainFloat(posInnerCtlOutput.x, -25, 25);
+        posInnerCtlOutput.y = ConstrainFloat(posInnerCtlOutput.y, -25, 25);    
     }
     else
     {
@@ -548,6 +548,30 @@ void FlightControlReset(void)
     
     //高度控制失能
     SetAltCtlStatus(DISABLE);
+}
+
+/**********************************************************************************************************
+*函 数 名: FcGetPID
+*功能说明: 获取飞控PID参数
+*形    参: PID的ID号
+*返 回 值: PID结构体
+**********************************************************************************************************/
+PID_t FcGetPID(uint8_t id)
+{
+    return fc.pid[id];
+}
+
+/**********************************************************************************************************
+*函 数 名: FcSetPID
+*功能说明: 设置飞控PID参数
+*形    参: PID的ID号 PID结构体
+*返 回 值: 无
+**********************************************************************************************************/
+void FcSetPID(uint8_t id, PID_t pid)
+{
+   fc.pid[id].kP = pid.kP;
+   fc.pid[id].kI = pid.kI;
+   fc.pid[id].kD = pid.kD;
 }
 
 

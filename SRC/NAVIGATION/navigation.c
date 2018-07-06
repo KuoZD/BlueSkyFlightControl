@@ -17,10 +17,12 @@
 #include "barometer.h"
 #include "flightStatus.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 NAVGATION_t nav;
 Kalman_t kalmanVel;
 Kalman_t kalmanPos;
-
 
 static void KalmanVelInit(void);
 static void KalmanPosInit(void);
@@ -40,7 +42,7 @@ void NavigationInit(void)
 /**********************************************************************************************************
 *函 数 名: VelocityEstimate
 *功能说明: 飞行速度估计 目前只融合了GPS与气压，以后还会有光流、TOF等模块数据的参与
-*          速度的计算均在机体坐标系下进行，所以GPS速度在参与融合时需要先转换到机体坐标系
+*          速度的计算均在机体坐标系下进行，所以GPS速度在参与融合时需要先转换到机体坐标系 
 *形    参: 无
 *返 回 值: 无
 **********************************************************************************************************/
@@ -48,7 +50,7 @@ void VelocityEstimate(void)
 {
 	static uint32_t previousT;	
 	float deltaT;
-	Vector3f_t velMeasure;
+	Vector3f_t gpsVel;	
     Vector3f_t input;
     static uint32_t count;
     static bool fuseFlag;
@@ -69,17 +71,17 @@ void VelocityEstimate(void)
         if(GpsGetFixStatus())
         {
             //获取GPS速度测量值，转换速度值到机体坐标系
-            TransVelToBodyFrame(GpsGetVelocity(), &nav.gpsVel, GetCopterAngle().z);
+            TransVelToBodyFrame(GpsGetVelocity(), &gpsVel, GetCopterAngle().z);
         }
         else
         {
-            nav.gpsVel.x = 0;
-            nav.gpsVel.y = 0;
+            gpsVel.x = 0;
+            gpsVel.y = 0;
         }
-        velMeasure.x = nav.gpsVel.x;
-        velMeasure.y = nav.gpsVel.y;
+        nav.velMeasure.x = gpsVel.x;
+        nav.velMeasure.y = gpsVel.y;
         //获取气压速度测量值
-        velMeasure.z = BaroGetVelocity();	
+        nav.velMeasure.z = BaroGetVelocity();	
         
         fuseFlag = true;
     }
@@ -89,9 +91,9 @@ void VelocityEstimate(void)
     }
 
     //加速度积分，并转换单位为cm
-    input.x = nav.accel.x * deltaT * 100 * GRAVITY_ACCEL;
-    input.y = nav.accel.y * deltaT * 100 * GRAVITY_ACCEL;
-    input.z = nav.accel.z * deltaT * 100 * GRAVITY_ACCEL;
+    input.x = nav.accel.x * GRAVITY_ACCEL * deltaT * 100;
+    input.y = nav.accel.y * GRAVITY_ACCEL * deltaT * 100;
+    input.z = nav.accel.z * GRAVITY_ACCEL * deltaT * 100;
     
     //测试用
 //    if(GetArmedStatus() == ARMED)
@@ -106,26 +108,24 @@ void VelocityEstimate(void)
 //        nav.velocity2.y = 0;
 //        nav.velocity2.z = 0;       
 //    }
-    nav.accelLpf.x = nav.accelLpf.x * 0.999f + nav.accel.x * 0.001f;
-    nav.accelLpf.y = nav.accelLpf.y * 0.999f + nav.accel.y * 0.001f;
-    nav.accelLpf.z = nav.accelLpf.z * 0.999f + nav.accel.z * 0.001f;
     
     //加速度值始终存在零偏误差，这里使用误差积分来修正零偏
-    input.x += nav.velErrorInt.x * 0.0001f;
-    input.y += nav.velErrorInt.y * 0.0001f;
-    input.z += nav.velErrorInt.z * 0.0001f;
+    input.x += nav.velErrorInt.x * 0.0003f;
+    input.y += nav.velErrorInt.y * 0.0003f;
+    input.z += nav.velErrorInt.z * 0.0003f;
 
     //卡尔曼滤波器更新
-    KalmanUpdate(&kalmanVel, input, velMeasure, fuseFlag);
+    KalmanUpdate(&kalmanVel, input, nav.velMeasure, fuseFlag);
     nav.velocity = kalmanVel.status;
     
     //计算误差积分
-    nav.velErrorInt.x += (velMeasure.x - nav.velocity.x) * velErrorIntRate;
-    nav.velErrorInt.y += (velMeasure.y - nav.velocity.y) * velErrorIntRate;
-    nav.velErrorInt.z += (velMeasure.z - nav.velocity.z) * velErrorIntRate;
-    nav.velErrorInt.x  = ConstrainFloat(nav.velErrorInt.x, -50, 50);
-    nav.velErrorInt.y  = ConstrainFloat(nav.velErrorInt.y, -50, 50);
-    nav.velErrorInt.z  = ConstrainFloat(nav.velErrorInt.z, -50, 50);
+    nav.velErrorInt.x += (nav.velMeasure.x - kalmanVel.statusSlidWindow[kalmanVel.slidWindowSize - kalmanVel.fuseDelay.x].x) * velErrorIntRate;
+    nav.velErrorInt.y += (nav.velMeasure.y - kalmanVel.statusSlidWindow[kalmanVel.slidWindowSize - kalmanVel.fuseDelay.y].y) * velErrorIntRate;        
+    nav.velErrorInt.z += (nav.velMeasure.z - kalmanVel.statusSlidWindow[kalmanVel.slidWindowSize - kalmanVel.fuseDelay.z].z) * velErrorIntRate;
+    
+    nav.velErrorInt.x  = ConstrainFloat(nav.velErrorInt.x, -20, 20);
+    nav.velErrorInt.y  = ConstrainFloat(nav.velErrorInt.y, -20, 20);
+    nav.velErrorInt.z  = ConstrainFloat(nav.velErrorInt.z, -30, 30);
 }
 
 /**********************************************************************************************************
@@ -139,7 +139,7 @@ void PositionEstimate(void)
 {
 	static uint32_t previousT;	
 	float deltaT;
-	Vector3f_t velocityEf, posMeasure;
+	Vector3f_t velocityEf;
     Vector3f_t input;
     static uint32_t count;
     static bool fuseFlag;
@@ -156,15 +156,15 @@ void PositionEstimate(void)
         if(GpsGetFixStatus())
         {
             //获取GPS位置
-            posMeasure = GpsGetPosition();
+            nav.posMeasure = GpsGetPosition();
         }
         else
         {
-            posMeasure.x = 0;
-            posMeasure.y = 0;
+            nav.posMeasure.x = 0;
+            nav.posMeasure.y = 0;
         }
         //获取气压高度测量值
-        posMeasure.z = BaroGetAlt();	
+        nav.posMeasure.z = BaroGetAlt();	
         
         fuseFlag = true;
     }
@@ -182,7 +182,7 @@ void PositionEstimate(void)
     input.z = velocityEf.z * deltaT;    
     
     //卡尔曼滤波器更新
-    KalmanUpdate(&kalmanPos, input, posMeasure, fuseFlag);
+    KalmanUpdate(&kalmanPos, input, nav.posMeasure, fuseFlag);
     nav.position = kalmanPos.status;    
 }
 
@@ -199,8 +199,8 @@ void AltCovarianceSelfAdaptation(void)
 	float windSpeed, windSpeedAcc;
 
 	//对运动加速度进行低通滤波
-	accelLpf.x = accelLpf.x * 0.995f + nav.accel.x * 0.005f;
-	accelLpf.y = accelLpf.y * 0.995f + nav.accel.y * 0.005f;	
+	accelLpf.x = accelLpf.x * 0.99f + nav.accel.x * 0.01f;
+	accelLpf.y = accelLpf.y * 0.99f + nav.accel.y * 0.01f;	
 
 	//计算运动加速度模值
 	accelMag = Pythagorous2(accelLpf.x, accelLpf.y);
@@ -215,12 +215,12 @@ void AltCovarianceSelfAdaptation(void)
 	{
 		if(GetAltControlStatus() == ALT_HOLD)
 		{
-			kalmanVel.r[8] = 2000 * (1 + ConstrainFloat(accelMag, 0, 0.5f));
-			kalmanPos.r[8] = 1000 * (1 + ConstrainFloat(accelMag, 0, 1.0f));
+			kalmanVel.r[8] = Sq(50 * (1 + ConstrainFloat(accelMag * 1.5f, 0, 1.5f)));
+			kalmanPos.r[8] = Sq(40 * (1 + ConstrainFloat(accelMag, 0, 1.0f)));
 		}
 		else
 		{
-			kalmanVel.r[8] = 2000 * (1 + ConstrainFloat(accelMag, 0, 0.5f));
+			kalmanVel.r[8] = Sq(50 * (1 + ConstrainFloat(accelMag, 0, 0.5f)));
 			kalmanPos.r[8] = 500;			
 		}
 	}
@@ -229,8 +229,8 @@ void AltCovarianceSelfAdaptation(void)
 		//悬停时,气压误差会随着环境风速的变化而增大
 		if(GetAltControlStatus() == ALT_HOLD)
 		{
-			kalmanVel.r[8] = 2000 * (1 + ConstrainFloat(windSpeed * 0.8f + windSpeedAcc * 0.2f, 0, 0.5f));
-			kalmanPos.r[8] = 1000 * (1 + ConstrainFloat(windSpeed * 0.8f + windSpeedAcc * 0.2f, 0, 1.0f));	
+			kalmanVel.r[8] = Sq(50 * (1 + ConstrainFloat(windSpeed * 0.8f + windSpeedAcc * 0.2f, 0, 0.5f)));
+			kalmanPos.r[8] = Sq(40 * (1 + ConstrainFloat(windSpeed * 0.8f + windSpeedAcc * 0.2f, 0, 1.0f)));	
 		}
 		else if(GetAltControlStatus() == ALT_CHANGED)
 		{
@@ -258,7 +258,33 @@ void AltCovarianceSelfAdaptation(void)
 **********************************************************************************************************/
 void PosCovarianceSelfAdaptation(void)
 {
-
+    //获取GPS水平定位精度
+    float gpsAcc = GpsGetAccuracy();
+    
+	if(GetPosControlStatus() == POS_HOLD)	
+	{ 
+        kalmanVel.r[0] = kalmanVel.r[4] = Sq(8 * (1 + ConstrainFloat((gpsAcc - 0.8f), -0.2, +1)));
+        
+        kalmanPos.r[0] = ConstrainFloat(sqrtf(kalmanPos.r[0]) + 0.002f, 10, 200);
+        kalmanPos.r[4] = ConstrainFloat(sqrtf(kalmanPos.r[4]) + 0.002f, 10, 200);
+        kalmanPos.r[0] = Sq(kalmanPos.r[0]);
+        kalmanPos.r[4] = Sq(kalmanPos.r[4]);    
+	}
+	else if(GetPosControlStatus() == POS_CHANGED)	
+	{
+        kalmanVel.r[0] = kalmanVel.r[4] = Sq(8 * (1 + ConstrainFloat((gpsAcc - 0.8f), -0.2, +1)));
+        kalmanPos.r[0] = kalmanPos.r[4] = 10;
+	}
+	else if(GetPosControlStatus() == POS_BRAKE)	
+	{
+        kalmanVel.r[0] = kalmanVel.r[4] = Sq(45);
+        kalmanPos.r[0] = kalmanPos.r[4] = 10;
+	}
+	else if(GetPosControlStatus() == POS_BRAKE_FINISH)	
+	{
+        kalmanVel.r[0] = kalmanVel.r[4] = Sq(10 * (1 + ConstrainFloat((gpsAcc - 0.8f), -0.2, +1)));
+        kalmanPos.r[0] = kalmanPos.r[4] = 10;        
+	}
 }
 
 /**********************************************************************************************************
@@ -283,6 +309,13 @@ static void KalmanVelInit(void)
     KalmanCovarianceMatSet(&kalmanVel, pMatInit);    
     KalmanStateTransMatSet(&kalmanVel, fMatInit);
     KalmanObserveMapMatSet(&kalmanVel, hMatInit);
+    
+    //状态滑动窗口，用于解决卡尔曼状态估计量与观测量之间的相位差问题
+    kalmanVel.slidWindowSize = 250;
+    kalmanVel.statusSlidWindow = pvPortMalloc(kalmanVel.slidWindowSize * sizeof(kalmanVel.status));
+    kalmanVel.fuseDelay.x = 250;    //0.25s延时
+    kalmanVel.fuseDelay.y = 250;    //0.25s延时
+    kalmanVel.fuseDelay.z = 200;    //0.2s延时
 }
 
 /**********************************************************************************************************
@@ -293,8 +326,8 @@ static void KalmanVelInit(void)
 **********************************************************************************************************/
 static void KalmanPosInit(void)
 {
-    float qMatInit[9] = {0.05, 0, 0, 0, 0.05, 0, 0, 0, 0.03};
-    float rMatInit[9] = {3000, 0,  0, 0, 3000, 0, 0, 0, 1000};
+    float qMatInit[9] = {0.003, 0, 0, 0, 0.003, 0, 0, 0, 0.03};
+    float rMatInit[9] = {500, 0,  0, 0, 500, 0, 0, 0, 1000};
     float pMatInit[9] = {3, 0, 0, 0, 3, 0, 0, 0, 5};
     float fMatInit[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     float hMatInit[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -307,6 +340,39 @@ static void KalmanPosInit(void)
     KalmanCovarianceMatSet(&kalmanPos, pMatInit);    
     KalmanStateTransMatSet(&kalmanPos, fMatInit);
     KalmanObserveMapMatSet(&kalmanPos, hMatInit);
+ 
+    //状态滑动窗口，用于解决卡尔曼状态估计量与观测量之间的相位差问题    
+    kalmanPos.slidWindowSize = 200;
+    kalmanPos.statusSlidWindow = pvPortMalloc(kalmanPos.slidWindowSize * sizeof(kalmanPos.status));
+    kalmanPos.fuseDelay.x = 200;    //0.2s延时
+    kalmanPos.fuseDelay.y = 200;    //0.2s延时
+    kalmanPos.fuseDelay.z = 100;    //0.1s延时
+}
+
+/**********************************************************************************************************
+*函 数 名: GetDirectionToHome
+*功能说明: 计算Home点方向
+*形    参: 无
+*返 回 值: 方向
+**********************************************************************************************************/
+float GetDirectionToHome(Vector3f_t position)
+{
+	float direction;
+	
+	direction = Degrees(atan2f(abs(position.y) , abs(position.x)));
+	
+	if(position.y<0 && position.x<0)
+		direction = direction;
+	else if(position.y<0 && position.x>0)
+		direction = (90 - direction) + 90;
+	else if(position.y>0 && position.x>0)
+		direction += 180;	
+	else if(position.y>0 && position.x<0)
+		direction = (90 - direction) + 270;	
+	else
+		direction = direction;	
+	
+	return direction;
 }
 
 /**********************************************************************************************************
@@ -347,7 +413,7 @@ Vector3f_t GetCopterAccel(void)
 
 /**********************************************************************************************************
 *函 数 名: GetCopterVelocity
-*功能说明: 获取飞行速度
+*功能说明: 获取飞行速度估计值
 *形    参: 无
 *返 回 值: 速度值
 **********************************************************************************************************/
@@ -357,8 +423,19 @@ Vector3f_t GetCopterVelocity(void)
 }
 
 /**********************************************************************************************************
+*函 数 名: GetCopterVelMeasure
+*功能说明: 获取飞行速度测量值
+*形    参: 无
+*返 回 值: 速度值
+**********************************************************************************************************/
+Vector3f_t GetCopterVelMeasure(void)
+{
+    return nav.velMeasure;
+}
+
+/**********************************************************************************************************
 *函 数 名: GetCopterPosition
-*功能说明: 获取飞机位置
+*功能说明: 获取位置估计值
 *形    参: 无
 *返 回 值: 位置值
 **********************************************************************************************************/
@@ -367,4 +444,13 @@ Vector3f_t GetCopterPosition(void)
     return nav.position;
 }
 
-
+/**********************************************************************************************************
+*函 数 名: GetCopterPosMeasure
+*功能说明: 获取位置测量值
+*形    参: 无
+*返 回 值: 速度值
+**********************************************************************************************************/
+Vector3f_t GetCopterPosMeasure(void)
+{
+    return nav.posMeasure;
+}
